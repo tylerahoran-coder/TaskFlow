@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="Taskflow"/>
+  <meta name="theme-color" content="#1C1C1A"/>
+  <title>Taskflow</title>
+
+  <!-- PWA Manifest inline -->
+  <script>
+    const manifest = {
+      name: "Taskflow",
+      short_name: "Taskflow",
+      start_url: ".",
+      display: "standalone",
+      background_color: "#F7F6F3",
+      theme_color: "#1C1C1A",
+      icons: [{
+        src: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%231C1C1A'/><text y='.9em' font-size='72' x='14'>✅</text></svg>",
+        sizes: "192x192", type: "image/svg+xml"
+      }]
+    };
+    const blob = new Blob([JSON.stringify(manifest)], {type:"application/json"});
+    const link = document.createElement("link");
+    link.rel = "manifest"; link.href = URL.createObjectURL(blob);
+    document.head.appendChild(link);
+  </script>
+
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Crimson+Pro:ital,wght@0,300;0,400;0,600;1,300&family=DM+Sans:wght@300;400;500;600&display=swap');
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body, #root { height: 100%; overflow: hidden; }
+    button, input, select, textarea { font-family: inherit; }
+    button { cursor: pointer; -webkit-tap-highlight-color: transparent; }
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #ccc; border-radius: 4px; }
+    .task-card:hover .del-btn, .task-card:active .del-btn { opacity: 1 !important; }
+    @keyframes fadeUp { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+    .task-card { animation: fadeUp 0.15s ease both; }
+    .sidebar-wrap { transition: transform 0.25s ease; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback } = React;
+
+// ─── Theme ────────────────────────────────────────────────────────────────────
+const C = {
+  bg: "#F7F6F3", surface: "#FFFFFF", sidebar: "#1C1C1A",
+  sidebarActive: "#2D2D2A", border: "#E9E7E2", text: "#1A1916",
+  muted: "#89857E", accent: "#3D7A5F", accentLight: "#EAF4EF",
+};
+
+const PRIORITY_MAP = {
+  high:   { label: "High",   color: "#B83232", bg: "#FDF0EE" },
+  medium: { label: "Medium", color: "#C47A1E", bg: "#FDF6EC" },
+  low:    { label: "Low",    color: "#3D7A5F", bg: "#EAF4EF" },
+};
+
+const LIST_ICONS  = ["📋","💼","🏠","🏃","📚","🛒","💡","🎯","✈️","💰","🎨","🎵","✝️","🤠","🌿","⭐"];
+const LIST_COLORS = ["#3D7A5F","#6B5BCD","#C47A1E","#B83232","#1976D2","#7B3F8C","#2E7D6E","#C2562D"];
+
+const DEFAULT_LISTS = [
+  { id: "god",           name: "God",           icon: "✝️", color: "#7B3F8C" },
+  { id: "family",        name: "Family",        icon: "🏠", color: "#C47A1E" },
+  { id: "work",          name: "Work",          icon: "💼", color: "#3D7A5F" },
+  { id: "bedrock-ranch", name: "Bedrock Ranch", icon: "🤠", color: "#C2562D" },
+];
+
+let _nid = Date.now();
+const uid = () => String(++_nid);
+
+// ─── Storage (localStorage) ───────────────────────────────────────────────────
+function loadData() {
+  try {
+    const raw = localStorage.getItem("taskflow-v1");
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return null;
+}
+function saveData(lists, tasks) {
+  try { localStorage.setItem("taskflow-v1", JSON.stringify({ lists, tasks })); } catch {}
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function fmtDate(str) {
+  if (!str) return null;
+  const d = new Date(str + "T00:00:00");
+  const today = new Date(); today.setHours(0,0,0,0);
+  const diff = Math.floor((d - today) / 86400000);
+  if (diff < 0)   return { text: `${Math.abs(diff)}d overdue`, over: true };
+  if (diff === 0) return { text: "Today", over: false };
+  if (diff === 1) return { text: "Tomorrow", over: false };
+  return { text: d.toLocaleDateString("en-US",{month:"short",day:"numeric"}), over: false };
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
+function App() {
+  const saved = loadData();
+  const [lists, setListsS] = useState(saved?.lists?.length ? saved.lists : DEFAULT_LISTS);
+  const [tasks, setTasksS] = useState(saved?.tasks || []);
+  const [activeList, setActiveList] = useState((saved?.lists?.[0] || DEFAULT_LISTS[0]).id);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const setLists = useCallback((u) => {
+    setListsS(prev => {
+      const next = typeof u === "function" ? u(prev) : u;
+      setTasksS(t => { saveData(next, t); return t; });
+      return next;
+    });
+  }, []);
+  const setTasks = useCallback((u) => {
+    setTasksS(prev => {
+      const next = typeof u === "function" ? u(prev) : u;
+      setListsS(l => { saveData(l, next); return l; });
+      return next;
+    });
+  }, []);
+
+  return (
+    <div style={{display:"flex",height:"100vh",background:C.bg,overflow:"hidden",fontFamily:"'Crimson Pro',Georgia,serif",color:C.text}}>
+      {sidebarOpen && <div onClick={() => setSidebarOpen(false)} style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.45)",zIndex:40}}/>}
+      <Sidebar lists={lists} setLists={setLists} tasks={tasks} setTasks={setTasks}
+        activeList={activeList} setActiveList={id => { setActiveList(id); setSidebarOpen(false); }}
+        sidebarOpen={sidebarOpen}/>
+      <Main lists={lists} tasks={tasks} setTasks={setTasks}
+        activeList={activeList} onMenuClick={() => setSidebarOpen(o => !o)}/>
+    </div>
+  );
+}
+
+// ─── Sidebar ─────────────────────────────────────────────────────────────────
+function Sidebar({ lists, setLists, tasks, setTasks, activeList, setActiveList, sidebarOpen }) {
+  const [showNew, setShowNew] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newIcon, setNewIcon] = useState("📋");
+  const [newColor, setNewColor] = useState(LIST_COLORS[0]);
+  const [confirmDel, setConfirmDel] = useState(null);
+  const isMobile = window.innerWidth < 640;
+
+  function createList() {
+    if (!newName.trim()) return;
+    const id = uid();
+    setLists(p => [...p, { id, name: newName.trim(), icon: newIcon, color: newColor }]);
+    setNewName(""); setNewIcon("📋"); setNewColor(LIST_COLORS[0]);
+    setShowNew(false); setActiveList(id);
+  }
+  function deleteList(id) {
+    const rem = lists.filter(l => l.id !== id);
+    setLists(rem);
+    setTasks(p => p.filter(t => t.listId !== id));
+    setConfirmDel(null);
+    if (activeList === id) setActiveList(rem[0]?.id || "");
+  }
+  const cnt = id => tasks.filter(t => t.listId === id && !t.done).length;
+
+  return (
+    <div className="sidebar-wrap" style={{
+      width:220, flexShrink:0, background:C.sidebar,
+      display:"flex", flexDirection:"column", padding:"24px 0 20px", zIndex:50,
+      ...(isMobile ? { position:"fixed", top:0, left:0, height:"100vh",
+        transform: sidebarOpen ? "translateX(0)" : "translateX(-100%)" } : {}),
+    }}>
+      <div style={{padding:"0 20px 22px",borderBottom:"1px solid rgba(255,255,255,0.07)"}}>
+        <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:600,letterSpacing:"0.15em",textTransform:"uppercase",color:"rgba(255,255,255,0.3)",marginBottom:4}}>My Lists</p>
+        <p style={{fontSize:22,fontWeight:300,color:"#fff",letterSpacing:"-0.01em"}}>Taskflow</p>
+      </div>
+
+      <div style={{flex:1,overflowY:"auto",padding:"10px 0"}}>
+        {lists.map(list => {
+          const active = list.id === activeList;
+          const c = cnt(list.id);
+          return (
+            <div key={list.id} style={{position:"relative",display:"flex",alignItems:"center"}}>
+              <button onClick={() => setActiveList(list.id)} style={{
+                flex:1,padding:"10px 20px",display:"flex",alignItems:"center",gap:10,
+                background: active ? C.sidebarActive : "transparent", border:"none",
+                borderLeft:`3px solid ${active ? list.color : "transparent"}`, transition:"all 0.15s",
+              }}>
+                <span style={{fontSize:17,lineHeight:1}}>{list.icon}</span>
+                <span style={{flex:1,textAlign:"left",fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:active?500:400,color:active?"#fff":"rgba(255,255,255,0.52)"}}>
+                  {list.name}
+                </span>
+                {c > 0 && <span style={{fontSize:11,fontFamily:"'DM Sans',sans-serif",fontWeight:600,color:active?list.color:"rgba(255,255,255,0.28)",background:"rgba(255,255,255,0.08)",borderRadius:20,padding:"1px 7px"}}>{c}</span>}
+              </button>
+              {active && <button onClick={() => setConfirmDel(list.id)} style={{position:"absolute",right:8,background:"transparent",border:"none",color:"rgba(255,255,255,0.22)",fontSize:17,padding:"4px 6px"}}>×</button>}
+            </div>
+          );
+        })}
+      </div>
+
+      {confirmDel && (() => {
+        const l = lists.find(x => x.id === confirmDel);
+        return (
+          <div style={{margin:"0 12px 10px",background:"rgba(255,255,255,0.07)",borderRadius:10,padding:"12px 14px"}}>
+            <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"rgba(255,255,255,0.55)",marginBottom:10}}>Delete "{l?.name}" and all its tasks?</p>
+            <div style={{display:"flex",gap:8}}>
+              <button onClick={() => deleteList(confirmDel)} style={{flex:1,padding:"7px 0",background:"#8B2020",border:"none",borderRadius:8,fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"#fff",fontWeight:500}}>Delete</button>
+              <button onClick={() => setConfirmDel(null)} style={{flex:1,padding:"7px 0",background:"rgba(255,255,255,0.1)",border:"none",borderRadius:8,fontFamily:"'DM Sans',sans-serif",fontSize:12,color:"rgba(255,255,255,0.5)"}}>Cancel</button>
+            </div>
+          </div>
+        );
+      })()}
+
+      {showNew ? (
+        <div style={{padding:"0 12px 4px"}}>
+          <input autoFocus placeholder="List name…" value={newName} onChange={e => setNewName(e.target.value)}
+            onKeyDown={e => e.key==="Enter" && createList()}
+            style={{width:"100%",padding:"8px 12px",marginBottom:8,borderRadius:8,border:"1px solid rgba(255,255,255,0.14)",background:"rgba(255,255,255,0.07)",color:"#fff",fontSize:14,outline:"none"}}/>
+          <div style={{display:"flex",gap:4,flexWrap:"wrap",marginBottom:8}}>
+            {LIST_ICONS.map(ic => <button key={ic} onClick={() => setNewIcon(ic)} style={{fontSize:16,padding:"3px 5px",borderRadius:6,border:`1.5px solid ${newIcon===ic?"rgba(255,255,255,0.5)":"transparent"}`,background:"transparent"}}>{ic}</button>)}
+          </div>
+          <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:10}}>
+            {LIST_COLORS.map(col => <button key={col} onClick={() => setNewColor(col)} style={{width:20,height:20,borderRadius:"50%",background:col,border:`2.5px solid ${newColor===col?"#fff":"transparent"}`}}/>)}
+          </div>
+          <div style={{display:"flex",gap:8}}>
+            <button onClick={createList} style={{flex:1,padding:"8px 0",background:newColor,border:"none",borderRadius:8,fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:500,color:"#fff"}}>Create</button>
+            <button onClick={() => { setShowNew(false); setNewName(""); }} style={{padding:"8px 12px",background:"rgba(255,255,255,0.08)",border:"none",borderRadius:8,fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"rgba(255,255,255,0.45)"}}>✕</button>
+          </div>
+        </div>
+      ) : (
+        <button onClick={() => setShowNew(true)} style={{margin:"0 12px",padding:"10px 14px",background:"rgba(255,255,255,0.06)",border:"1px dashed rgba(255,255,255,0.16)",borderRadius:10,fontFamily:"'DM Sans',sans-serif",fontSize:13,color:"rgba(255,255,255,0.4)",display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:16}}>+</span> New List
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+function Main({ lists, tasks, setTasks, activeList, onMenuClick }) {
+  const list = lists.find(l => l.id === activeList);
+  const [tab, setTab] = useState("active");
+  const [showForm, setShowForm] = useState(false);
+  const [filterPri, setFilterPri] = useState("All");
+  const [form, setForm] = useState({ text:"", priority:"medium", dueDate:"", tags:[], recurring:false });
+  const [tagInput, setTagInput] = useState("");
+  const isMobile = window.innerWidth < 640;
+
+  const listTasks  = tasks.filter(t => t.listId === activeList);
+  const activeTasks = listTasks.filter(t => !t.done);
+  const doneTasks   = listTasks.filter(t => t.done);
+  const progress = listTasks.length ? Math.round((doneTasks.length / listTasks.length) * 100) : 0;
+  const filtered = (tab==="active" ? activeTasks : doneTasks).filter(t => filterPri==="All" || t.priority===filterPri);
+
+  function addTask() {
+    if (!form.text.trim()) return;
+    setTasks(p => [{ id:uid(), listId:activeList, ...form, done:false }, ...p]);
+    setForm({ text:"", priority:"medium", dueDate:"", tags:[], recurring:false });
+    setTagInput(""); setShowForm(false);
+  }
+  function toggleDone(id) { setTasks(p => p.map(t => t.id===id ? {...t,done:!t.done} : t)); }
+  function deleteTask(id) { setTasks(p => p.filter(t => t.id!==id)); }
+  function addTag(tag) {
+    const c = tag.trim();
+    if (!c || form.tags.includes(c)) return;
+    setForm(f => ({...f, tags:[...f.tags,c]})); setTagInput("");
+  }
+
+  if (!list) return <div style={{flex:1,display:"flex",alignItems:"center",justifyContent:"center",color:C.muted,fontStyle:"italic"}}>Select a list</div>;
+
+  return (
+    <div style={{flex:1,overflowY:"auto",display:"flex",flexDirection:"column",minWidth:0}}>
+      {/* Header */}
+      <div style={{padding:"22px 20px 0",position:"sticky",top:0,background:C.bg,zIndex:10}}>
+        <div style={{display:"flex",alignItems:"center",gap:12,marginBottom:16}}>
+          {isMobile && <button onClick={onMenuClick} style={{width:36,height:36,border:`1px solid ${C.border}`,background:C.surface,borderRadius:9,display:"flex",alignItems:"center",justifyContent:"center",fontSize:16,flexShrink:0}}>☰</button>}
+          <span style={{fontSize:26,lineHeight:1,flexShrink:0}}>{list.icon}</span>
+          <div style={{flex:1,minWidth:0}}>
+            <h1 style={{fontSize:26,fontWeight:300,letterSpacing:"-0.02em",lineHeight:1.1}}>{list.name}</h1>
+            <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:12,color:C.muted,marginTop:1}}>{activeTasks.length} active · {doneTasks.length} done</p>
+          </div>
+        </div>
+
+        <div style={{marginBottom:16}}>
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
+            <div style={{display:"flex",gap:12,flexWrap:"wrap"}}>
+              {Object.entries(PRIORITY_MAP).map(([k,v]) => {
+                const c = activeTasks.filter(t => t.priority===k).length;
+                return c > 0 ? <span key={k} style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,color:C.muted,display:"flex",alignItems:"center",gap:4}}><span style={{width:6,height:6,borderRadius:"50%",background:v.color,display:"inline-block"}}/>{c} {v.label.toLowerCase()}</span> : null;
+              })}
+            </div>
+            <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:500,color:list.color}}>{progress}%</span>
+          </div>
+          <div style={{height:4,background:C.border,borderRadius:99,overflow:"hidden"}}>
+            <div style={{height:"100%",width:`${progress}%`,background:list.color,borderRadius:99,transition:"width 0.4s ease"}}/>
+          </div>
+        </div>
+
+        <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:14}}>
+          <div style={{display:"flex",background:C.surface,borderRadius:10,border:`1px solid ${C.border}`,padding:3,flex:1}}>
+            {[["active",`Active (${activeTasks.length})`],["done",`Done (${doneTasks.length})`]].map(([v,l]) => (
+              <button key={v} onClick={() => setTab(v)} style={{flex:1,padding:"7px 0",borderRadius:8,border:"none",background:tab===v?C.bg:"transparent",fontFamily:"'DM Sans',sans-serif",fontSize:13,fontWeight:tab===v?500:400,color:tab===v?C.text:C.muted,boxShadow:tab===v?"0 1px 3px rgba(0,0,0,0.07)":"none",transition:"all 0.15s"}}>{l}</button>
+            ))}
+          </div>
+          <select value={filterPri} onChange={e => setFilterPri(e.target.value)} style={{padding:"8px 10px",borderRadius:10,border:`1px solid ${C.border}`,background:C.surface,fontFamily:"'DM Sans',sans-serif",fontSize:13,color:C.text,outline:"none"}}>
+            <option value="All">All</option>
+            {Object.entries(PRIORITY_MAP).map(([k,v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+        </div>
+      </div>
+
+      {/* Body */}
+      <div style={{flex:1,padding:"0 20px 80px"}}>
+        {!showForm ? (
+          <button onClick={() => setShowForm(true)} style={{width:"100%",padding:"12px",marginBottom:14,background:list.color,color:"#fff",border:"none",borderRadius:12,fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:500}}>
+            + Add Task
+          </button>
+        ) : (
+          <TaskForm form={form} setForm={setForm} tagInput={tagInput} setTagInput={setTagInput}
+            onAdd={addTask} onCancel={() => { setShowForm(false); setForm({text:"",priority:"medium",dueDate:"",tags:[],recurring:false}); setTagInput(""); }}
+            accentColor={list.color} addTag={addTag}/>
+        )}
+
+        {filtered.length === 0 && <div style={{textAlign:"center",padding:"40px 0",color:C.muted,fontStyle:"italic",fontSize:17,fontWeight:300}}>{tab==="done" ? "Nothing completed yet." : "All clear — enjoy your day!"}</div>}
+
+        <div style={{display:"flex",flexDirection:"column",gap:10}}>
+          {filtered.map((task,i) => (
+            <TaskCard key={task.id} task={task} accentColor={list.color}
+              extraStyle={{animationDelay:`${i*0.04}s`}}
+              onToggle={() => toggleDone(task.id)} onDelete={() => deleteTask(task.id)}/>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── Task Form ────────────────────────────────────────────────────────────────
+function TaskForm({ form, setForm, tagInput, setTagInput, onAdd, onCancel, accentColor, addTag }) {
+  const PRESET = ["Work","Personal","Health","Learning","Urgent","Later"];
+  return (
+    <div style={{background:C.surface,borderRadius:16,padding:18,border:`1px solid ${C.border}`,marginBottom:14,animation:"fadeUp 0.15s ease"}}>
+      <textarea autoFocus placeholder="What needs to be done?" value={form.text} onChange={e => setForm(f=>({...f,text:e.target.value}))} rows={2}
+        style={{width:"100%",border:"none",outline:"none",resize:"none",fontSize:17,fontWeight:300,color:C.text,background:"transparent",lineHeight:1.5,marginBottom:14}}/>
+
+      <Row label="Priority">
+        {Object.entries(PRIORITY_MAP).map(([k,v]) => (
+          <Chip key={k} active={form.priority===k} color={v.color} bg={v.bg} onClick={() => setForm(f=>({...f,priority:k}))}>{v.label}</Chip>
+        ))}
+      </Row>
+
+      <Row label="Due Date">
+        <input type="date" value={form.dueDate} onChange={e => setForm(f=>({...f,dueDate:e.target.value}))}
+          style={{padding:"5px 11px",borderRadius:8,border:`1.5px solid ${C.border}`,fontSize:13,color:C.text,background:C.bg,fontFamily:"'DM Sans',sans-serif",outline:"none"}}/>
+      </Row>
+
+      <Row label="Recurring">
+        <button onClick={() => setForm(f=>({...f,recurring:!f.recurring}))} style={{display:"flex",alignItems:"center",gap:8,padding:"5px 14px",borderRadius:20,border:`1.5px solid ${form.recurring?"#1976D2":C.border}`,background:form.recurring?"#EEF4FD":"transparent",color:form.recurring?"#1976D2":C.muted,fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:500,transition:"all 0.15s"}}>
+          <span style={{fontSize:13}}>🔁</span>
+          {form.recurring ? "Repeats Daily" : "Daily Repeat"}
+        </button>
+      </Row>
+
+      <Row label="Tags" wrap>
+        {PRESET.map(tag => (
+          <Chip key={tag} active={form.tags.includes(tag)} color={accentColor} bg={C.accentLight}
+            onClick={() => form.tags.includes(tag) ? setForm(f=>({...f,tags:f.tags.filter(t=>t!==tag)})) : addTag(tag)}>{tag}</Chip>
+        ))}
+        {form.tags.filter(t => !PRESET.includes(t)).map(tag => (
+          <Chip key={tag} active color={accentColor} bg={C.accentLight} onClick={() => setForm(f=>({...f,tags:f.tags.filter(t=>t!==tag)}))}>
+            {tag} ×
+          </Chip>
+        ))}
+      </Row>
+
+      <div style={{display:"flex",gap:8}}>
+        <input placeholder="Custom tag + Enter" value={tagInput} onChange={e => setTagInput(e.target.value)}
+          onKeyDown={e => e.key==="Enter" && addTag(tagInput)}
+          style={{flex:1,padding:"6px 11px",borderRadius:8,border:`1.5px solid ${C.border}`,fontSize:13,outline:"none",background:C.bg,color:C.text,fontFamily:"'DM Sans',sans-serif"}}/>
+      </div>
+
+      <div style={{display:"flex",gap:8,marginTop:14}}>
+        <button onClick={onAdd} style={{flex:1,padding:"11px",background:accentColor,color:"#fff",border:"none",borderRadius:10,fontFamily:"'DM Sans',sans-serif",fontSize:14,fontWeight:500}}>Save Task</button>
+        <button onClick={onCancel} style={{padding:"11px 16px",background:"transparent",border:`1.5px solid ${C.border}`,borderRadius:10,fontFamily:"'DM Sans',sans-serif",fontSize:14,color:C.muted}}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Task Card ────────────────────────────────────────────────────────────────
+function TaskCard({ task, accentColor, onToggle, onDelete, extraStyle }) {
+  const prio = PRIORITY_MAP[task.priority];
+  const due  = fmtDate(task.dueDate);
+  return (
+    <div className="task-card" style={{background:C.surface,borderRadius:14,padding:"13px 15px",border:`1px solid ${C.border}`,display:"flex",gap:12,alignItems:"flex-start",opacity:task.done?0.55:1,transition:"opacity 0.2s",...extraStyle}}>
+      <button onClick={onToggle} style={{width:22,height:22,borderRadius:"50%",flexShrink:0,marginTop:2,border:`2px solid ${task.done?accentColor:C.border}`,background:task.done?accentColor:"transparent",display:"flex",alignItems:"center",justifyContent:"center",transition:"all 0.15s"}}>
+        {task.done && <span style={{color:"#fff",fontSize:11,lineHeight:1}}>✓</span>}
+      </button>
+      <div style={{flex:1,minWidth:0}}>
+        <p style={{fontSize:16,fontWeight:400,lineHeight:1.4,marginBottom:6,textDecoration:task.done?"line-through":"none",color:task.done?C.muted:C.text}}>{task.text}</p>
+        <div style={{display:"flex",flexWrap:"wrap",gap:6,alignItems:"center"}}>
+          <span style={{padding:"2px 8px",borderRadius:20,background:prio.bg,color:prio.color,fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:500}}>{prio.label}</span>
+          {due && <span style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:500,color:due.over?"#B83232":C.muted}}>{due.over?"⚠ ":"📅 "}{due.text}</span>}
+          {task.recurring && <span style={{padding:"2px 8px",borderRadius:20,background:"#EEF4FD",color:"#1976D2",fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:500}}>🔁 Daily</span>}
+          {task.tags.map(tag => <span key={tag} style={{padding:"2px 8px",borderRadius:20,background:C.bg,color:C.muted,fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:500}}>{tag}</span>)}
+        </div>
+      </div>
+      <button className="del-btn" onClick={onDelete} style={{opacity:0,width:26,height:26,borderRadius:7,border:"none",background:C.bg,color:C.muted,fontSize:16,flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",transition:"opacity 0.15s"}}>×</button>
+    </div>
+  );
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+function Row({ label, children, wrap }) {
+  return (
+    <div style={{marginBottom:12}}>
+      <p style={{fontFamily:"'DM Sans',sans-serif",fontSize:11,fontWeight:500,textTransform:"uppercase",letterSpacing:"0.1em",color:C.muted,marginBottom:7}}>{label}</p>
+      <div style={{display:"flex",flexWrap:wrap?"wrap":"nowrap",gap:7}}>{children}</div>
+    </div>
+  );
+}
+function Chip({ active, color, bg, onClick, children }) {
+  return (
+    <button onClick={onClick} style={{padding:"4px 12px",borderRadius:20,border:`1.5px solid ${active?color:C.border}`,background:active?bg:"transparent",color:active?color:C.muted,fontFamily:"'DM Sans',sans-serif",fontSize:12,fontWeight:500,transition:"all 0.15s"}}>
+      {children}
+    </button>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
